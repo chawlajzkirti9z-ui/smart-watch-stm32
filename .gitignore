@@ -1,0 +1,35 @@
+# Keil 编译输出
+Objects/
+Listings/
+DebugConfig/
+*.uvguix.*
+*.bak
+*.dep
+*.crf
+*.o
+*.d
+*.axf
+*.hex
+*.bin
+*.map
+*.htm
+*.lnp
+*.iex
+*.sct
+*.build_log.htm
+*.trail
+JLinkLog.txt
+*.scvd
+*.lin
+*.lst
+*.plg
+*.opt
+*.uvoptx
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+
+# 编辑器临时文件
+*~
+*.swp
