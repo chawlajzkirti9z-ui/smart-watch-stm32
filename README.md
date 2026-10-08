@@ -43,7 +43,7 @@
 ## 项目结构
 ```
 智能手表/
-├── Hardware/          # 硬件驱动
+├── Hardware/          # 硬件驱动 
 │   ├── OLED.c/h       # OLED 显示 + 显存 + 画图
 │   ├── OLED_Font.h    # 字库
 │   ├── RTC.c/h        # RTC 时间日期
