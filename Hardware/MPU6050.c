@@ -1,5 +1,42 @@
 #include "stm32f10x.h"
 #include "MPU6050.h"
+#include <math.h>   // 顶部加这句，用于sqrt
+
+/**
+  * @brief  检测是否迈出一步
+  * @return 1=迈出一步, 0=没有
+  * @note   用合加速度判断，超过阈值且防抖后算一步
+  */
+uint8_t MPU6050_CheckStep(void)
+{
+    static uint16_t debounce = 0;
+    int16_t ax, ay, az;
+    uint32_t accel;
+    int32_t ax32, ay32, az32;
+
+    // 读一次加速度，失败直接返回0
+    if (MPU6050_ReadAccel(&ax, &ay, &az) != 0) return 0;
+
+    // 合加速度：sqrt(ax² + ay² + az²)
+    ax32 = ax; ay32 = ay; az32 = az;
+    accel = (uint32_t)sqrt((float)(ax32*ax32 + ay32*ay32 + az32*az32));
+
+    // 静止时约16384（1g），走路时上下波动，阈值取 1g+3000
+    if (accel > 19384)
+    {
+        debounce++;
+        if (debounce > 30)   // 防抖，连读30次才确认一步
+        {
+            debounce = 0;
+            return 1;
+        }
+    }
+    else
+    {
+        debounce = 0;        // 回到静止区，复位防抖
+    }
+    return 0;
+}
 
 /* 引脚定义：与OLED共用 I2C 总线 (PB8=SCL, PB9=SDA) */
 #define MPU_SCL_H()    GPIO_SetBits(GPIOB, GPIO_Pin_8)

@@ -12,11 +12,11 @@
 /* 页面编号：
    0=主界面  1=Menu  2=Clock菜单  3=秒表  4=姿态
    5=设置菜单  6=日期时间  7=息屏  8=亮度  9=倒计时
-   10=时间闹钟设置 */
+   10=时间闹钟  11=计步 */
 uint8_t page = 0;
 uint8_t main_sel = 0;   // 主界面：0=Menu, 1=Set
-uint8_t menu_sel = 0;   // Menu：0=Pose, 1=Clock, 2=Empty
-uint8_t sub_sel  = 0;   // 子菜单
+uint8_t menu_sel = 0;   // Menu：0=Pose, 1=Clock, 2=Step, 3=Empty
+uint8_t sub_sel  = 0;
 uint8_t edit_flag = 0;
 uint8_t edit_sub  = 0;
 
@@ -28,7 +28,7 @@ uint8_t brightness = 0xCF;
 uint8_t alarm_time_h = 7;
 uint8_t alarm_time_m = 0;
 uint8_t alarm_time_en = 0;
-uint8_t alarm_sub = 0;   // 0=改小时, 1=改分钟
+uint8_t alarm_sub = 0;
 
 /* 倒计时 */
 uint16_t timer_sec = 30;
@@ -42,6 +42,10 @@ uint8_t buzzer_on = 0;
 uint32_t stopwatch_start = 0;
 uint8_t  stopwatch_running = 0;
 uint32_t stopwatch_elapsed = 0;
+
+/* 计步 */
+uint32_t step_count = 0;   // 今日步数
+uint32_t step_date  = 0;   // 步数所属日期（year*10000+month*100+day）
 
 /* 息屏 */
 uint32_t last_active_time = 0;
@@ -58,6 +62,7 @@ int main(void)
     W25Q64_Init();
     Buzzer_Init();
 
+    /* 从Flash读回时间 */
     uint32_t saved = W25Q64_ReadTime();
     if (saved != 0xFFFFFFFF && saved != 0)
     {
@@ -66,6 +71,11 @@ int main(void)
         RTC_WaitForLastTask();
         last_save_counter = saved;
     }
+
+    /* 从Flash读回步数和日期 */
+    W25Q64_ReadSteps(&step_count, &step_date);
+    if (step_count == 0xFFFFFFFF) step_count = 0;
+    if (step_date  == 0xFFFFFFFF) step_date  = 0;
 
     Encoder_Init();
     Key_Init();
@@ -102,11 +112,29 @@ int main(void)
         RTC_Get_Time(&h, &m, &s);
         RTC_Get_Date(&year, &month, &day);
 
+        /* 每60秒保存时间 */
         uint32_t now = RTC_GetCounter();
         if (now - last_save_counter >= 60)
         {
             W25Q64_SaveTime(now);
             last_save_counter = now;
+        }
+
+        /* ============ 计步：跨天自动清零 ============ */
+        uint32_t today = (uint32_t)year * 10000 + month * 100 + day;
+        if (step_date != today)
+        {
+            step_date = today;
+            step_count = 0;
+            W25Q64_SaveSteps(step_count, step_date);
+        }
+
+        /* ============ 计步：后台检测 ============ */
+        if (MPU6050_CheckStep())
+        {
+            step_count++;
+            if (step_count % 100 == 0)   // 每100步存一次
+                W25Q64_SaveSteps(step_count, step_date);
         }
 
         bat = ADC_GetBatteryPercent();
@@ -118,22 +146,19 @@ int main(void)
         if (rot == 0) rot_lock = 0;
         if (rot_lock) rot = 0;
 
-       /* 唤醒：息屏时任意操作只唤醒，不执行页面逻辑 */
-				if (key == 1 || key2 == 1 || rot != 0)
-				{
-					last_active_time = RTC_GetCounter();
-						if (oled_sleeping)
-					{
-						OLED_DisplayOn();
-						oled_sleeping = 0;
-					// 屏蔽本次操作，防止息屏期间的按键/旋转触发页面切换
-						key = 0;
-						key2 = 0;
-						rot = 0;
-					}
-				}
+        /* ============ 唤醒（息屏期间屏蔽操作） ============ */
+        if (key == 1 || key2 == 1 || rot != 0)
+        {
+            last_active_time = RTC_GetCounter();
+            if (oled_sleeping)
+            {
+                OLED_DisplayOn();
+                oled_sleeping = 0;
+                key = 0; key2 = 0; rot = 0;
+            }
+        }
 
-        /* 时间闹钟：整分那一秒触发 */
+        /* ============ 时间闹钟 ============ */
         if (alarm_time_en && h == alarm_time_h && m == alarm_time_m && s == 0 && !buzzer_on)
         {
             buzzer_on = 1; Buzzer_On(); alarm_time_en = 0;
@@ -157,7 +182,7 @@ int main(void)
             }
         }
 
-        /* 息屏判断 */
+        /* ============ 息屏 ============ */
         if (!oled_sleeping && sleep_timeout > 0 &&
             RTC_GetCounter() - last_active_time >= sleep_timeout)
         {
@@ -165,7 +190,7 @@ int main(void)
             oled_sleeping = 1;
         }
 
-        /* ============ 页面0：主界面 ============ */
+        /* ================= 页面0：主界面 ================= */
         if (page == 0)
         {
             if (rot != 0)
@@ -195,35 +220,36 @@ int main(void)
             if (main_sel == 1) OLED_ShowString(4, 10, ">Set");
             else               OLED_ShowString(4, 10, " Set");
         }
-        /* ============ 页面1：Menu ============ */
+        /* ================= 页面1：Menu ================= */
         else if (page == 1)
         {
             if (key2 == 1) { page = 0; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
             if (rot != 0)
             {
                 menu_sel += rot;
-                if (menu_sel > 2) menu_sel = 0;
-                if (menu_sel < 0) menu_sel = 2;
+                if (menu_sel > 3) menu_sel = 0;
+                if (menu_sel < 0) menu_sel = 3;
                 rot_lock = 1;
             }
             else if (key == 1)
             {
-                if (menu_sel == 0)      { page = 4; }
-                else if (menu_sel == 1) { page = 2; sub_sel = 0; }
-                if (menu_sel != 2) { rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
+                if (menu_sel == 0)      { page = 4; }                    // Pose
+                else if (menu_sel == 1) { page = 2; sub_sel = 0; }       // Clock
+                else if (menu_sel == 2) { page = 11; }                   // Step
+                if (menu_sel != 3) { rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
             }
 
             OLED_Clear();
             OLED_ShowString(1, 1, "Menu:");
-            char *items[] = {"Pose", "Clock", "Empty"};
-            for (int i = 0; i < 3; i++)
+            char *items[] = {"Pose", "Clock", "Step", "Empty"};
+            for (int i = 0; i < 4; i++)
             {
                 if (menu_sel == i) sprintf(buf, ">%s", items[i]);
                 else                sprintf(buf, " %s", items[i]);
-                OLED_ShowString(i + 2, 1, buf);
+                OLED_ShowString(i + 1, 1, buf);
             }
         }
-        /* ============ 页面2：Clock菜单 ============ */
+        /* ================= 页面2：Clock菜单 ================= */
         else if (page == 2)
         {
             if (key2 == 1) { page = 1; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
@@ -236,9 +262,9 @@ int main(void)
             }
             else if (key == 1)
             {
-                if (sub_sel == 1)      { page = 10; alarm_sub = 0; rot_lock = 1; }  // Alarm
-                else if (sub_sel == 2) { page = 9; rot_lock = 1; }                  // Countdown
-                else if (sub_sel == 3) { page = 3; rot_lock = 1; }                  // Stopwatch
+                if (sub_sel == 1)      { page = 10; alarm_sub = 0; rot_lock = 1; }
+                else if (sub_sel == 2) { page = 9; rot_lock = 1; }
+                else if (sub_sel == 3) { page = 3; rot_lock = 1; }
                 if (sub_sel != 0) { OLED_Clear(); OLED_Update(); continue; }
             }
 
@@ -252,7 +278,7 @@ int main(void)
                 OLED_ShowString(i + 1, 1, buf);
             }
         }
-        /* ============ 页面3：秒表 ============ */
+        /* ================= 页面3：秒表 ================= */
         else if (page == 3)
         {
             if (key2 == 1)
@@ -279,7 +305,7 @@ int main(void)
             if (stopwatch_running) OLED_ShowString(4, 1, "Running");
             else                   OLED_ShowString(4, 1, "Stopped");
         }
-        /* ============ 页面4：姿态 ============ */
+        /* ================= 页面4：姿态 ================= */
         else if (page == 4)
         {
             if (key == 1 || key2 == 1 || rot != 0)
@@ -319,7 +345,7 @@ int main(void)
                 OLED_DrawPoint(px-1, py+1, 1); OLED_DrawPoint(px+1, py-1, 1);
             }
         }
-        /* ============ 页面5：设置菜单 ============ */
+        /* ================= 页面5：设置菜单 ================= */
         else if (page == 5)
         {
             if (key2 == 1) { page = 0; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
@@ -347,7 +373,7 @@ int main(void)
             sprintf(buf, sub_sel == 2 ? ">Bright %3d" : " Bright %3d", brightness);
             OLED_ShowString(4, 1, buf);
         }
-        /* ============ 页面6：日期时间 ============ */
+        /* ================= 页面6：日期时间 ================= */
         else if (page == 6)
         {
             if (edit_flag == 0)
@@ -413,7 +439,7 @@ int main(void)
                 }
             }
         }
-        /* ============ 页面7：息屏时间 ============ */
+        /* ================= 页面7：息屏时间 ================= */
         else if (page == 7)
         {
             if (key2 == 1) { page = 5; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
@@ -434,7 +460,7 @@ int main(void)
             OLED_ShowString(3, 1, "Rotate to set");
             OLED_ShowString(4, 1, "PA2 save");
         }
-        /* ============ 页面8：亮度 ============ */
+        /* ================= 页面8：亮度 ================= */
         else if (page == 8)
         {
             if (key2 == 1) { page = 5; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
@@ -456,7 +482,7 @@ int main(void)
             OLED_ShowString(3, 1, "Rotate to set");
             OLED_ShowString(4, 1, "PA2 save");
         }
-        /* ============ 页面9：倒计时 ============ */
+        /* ================= 页面9：倒计时 ================= */
         else if (page == 9)
         {
             if (key2 == 1) { page = 2; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
@@ -482,40 +508,29 @@ int main(void)
             OLED_ShowString(3, 1, "Rotate to set");
             OLED_ShowString(4, 1, "PA2 start");
         }
-        /* ============ 页面10：时间闹钟设置 ============ */
+        /* ================= 页面10：时间闹钟 ================= */
         else if (page == 10)
         {
-            if (key2 == 1)   // PA3：取消，回Clock菜单
-            {
-                page = 2; rot_lock = 1;
-                OLED_Clear(); OLED_Update(); continue;
-            }
+            if (key2 == 1) { page = 2; rot_lock = 1; OLED_Clear(); OLED_Update(); continue; }
 
-            if (rot != 0)   // 旋转：改小时或分钟
+            if (rot != 0)
             {
-                if (alarm_sub == 0)
-                {
+                if (alarm_sub == 0) {
                     alarm_time_h += rot;
                     if (alarm_time_h >= 24) alarm_time_h = 0;
                     if (alarm_time_h < 0)   alarm_time_h = 23;
-                }
-                else
-                {
+                } else {
                     alarm_time_m += rot;
                     if (alarm_time_m >= 60) alarm_time_m = 0;
                     if (alarm_time_m < 0)   alarm_time_m = 59;
                 }
                 rot_lock = 1;
             }
-            else if (key == 1)   // PA2：切小时→分钟→启用
+            else if (key == 1)
             {
-                if (alarm_sub == 0)
-                {
-                    alarm_sub = 1;   // 切到分钟
-                }
-                else
-                {
-                    alarm_time_en = 1;   // 启用闹钟
+                if (alarm_sub == 0) { alarm_sub = 1; }
+                else {
+                    alarm_time_en = 1;
                     page = 2; rot_lock = 1;
                     OLED_Clear(); OLED_Update(); continue;
                 }
@@ -525,11 +540,27 @@ int main(void)
             OLED_ShowString(1, 1, "Set Alarm:");
             sprintf(buf, "%02d:%02d", alarm_time_h, alarm_time_m);
             OLED_ShowString(2, 3, buf);
-
             if (alarm_sub == 0) OLED_ShowString(3, 1, "Editing Hour");
             else                OLED_ShowString(3, 1, "Editing Min ");
             if (alarm_time_en)  OLED_ShowString(4, 1, "Enabled");
             else                OLED_ShowString(4, 1, "Disabled");
+        }
+        /* ================= 页面11：计步 ================= */
+        else if (page == 11)
+        {
+            if (key == 1 || key2 == 1 || rot != 0)   // 任意键返回
+            {
+                page = 1; rot_lock = 1;
+                OLED_Clear(); OLED_Update(); continue;
+            }
+
+            OLED_Clear();
+            OLED_ShowString(1, 1, "Step Counter");
+            sprintf(buf, "%5d", step_count);
+            OLED_ShowString(2, 5, buf);   // 大号数字居中
+            sprintf(buf, "Today:%04d-%02d-%02d", year, month, day);
+            OLED_ShowString(3, 1, buf);
+            OLED_ShowString(4, 1, "Auto clear daily");
         }
 
         OLED_Update();
