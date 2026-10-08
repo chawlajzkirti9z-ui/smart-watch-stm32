@@ -266,3 +266,30 @@ void OLED_Init(void)
 	OLED_Clear();
 	OLED_Update();  /* 清完显存后刷一次屏 */
 }
+
+/**
+  * @brief  打开OLED显示
+  */
+void OLED_DisplayOn(void)
+{
+    OLED_WriteCommand(0xAF);
+}
+
+/**
+  * @brief  关闭OLED显示（息屏）
+  * @note   只是不显示，GRAM内容不变，下次唤醒时还是原画面
+  */
+void OLED_DisplayOff(void)
+{
+    OLED_WriteCommand(0xAE);
+}
+
+/**
+  * @brief  设置OLED亮度（对比度）
+  * @param  brightness: 0~255，越大越亮
+  */
+void OLED_SetBrightness(uint8_t brightness)
+{
+    OLED_WriteCommand(0x81);      // 对比度控制命令
+    OLED_WriteCommand(brightness); // 对比度值
+}
